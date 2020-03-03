@@ -54,6 +54,7 @@
 #include "nrf_sdh_ble.h"
 #include "nrf_sdh_soc.h"
 #include "ble_nus_c.h"
+#include "ble_conn_state.h"
 #include "nrf_ble_gatt.h"
 #include "nrf_pwr_mgmt.h"
 #include "nrf_ble_scan.h"
@@ -74,7 +75,7 @@
 #define ECHOBACK_BLE_UART_DATA  1                                       /**< Echo the UART data that is received over the Nordic UART Service (NUS) back to the sender. */
 
 
-BLE_NUS_C_DEF(m_ble_nus_c);                                             /**< BLE Nordic UART Service (NUS) client instance. */
+BLE_NUS_C_ARRAY_DEF(m_ble_nus_c, NRF_SDH_BLE_CENTRAL_LINK_COUNT);       /**< BLE Nordic UART Service (NUS) client instances. */
 NRF_BLE_GATT_DEF(m_gatt);                                               /**< GATT module instance. */
 BLE_DB_DISCOVERY_DEF(m_db_disc);                                        /**< Database discovery module instance. */
 NRF_BLE_SCAN_DEF(m_scan);                                               /**< Scanning Module instance. */
@@ -150,7 +151,7 @@ static void scan_evt_handler(scan_evt_t const * p_scan_evt)
          {
               ble_gap_evt_connected_t const * p_connected =
                                p_scan_evt->params.connected.p_connected;
-             // Scan is automatically stopped by the connection.
+
              NRF_LOG_INFO("Connecting to target %02x%02x%02x%02x%02x%02x",
                       p_connected->peer_addr.addr[0],
                       p_connected->peer_addr.addr[1],
@@ -158,7 +159,7 @@ static void scan_evt_handler(scan_evt_t const * p_scan_evt)
                       p_connected->peer_addr.addr[3],
                       p_connected->peer_addr.addr[4],
                       p_connected->peer_addr.addr[5]
-                      );
+                      );             
          } break;
 
          case NRF_BLE_SCAN_EVT_SCAN_TIMEOUT:
@@ -206,7 +207,7 @@ static void scan_init(void)
  */
 static void db_disc_handler(ble_db_discovery_evt_t * p_evt)
 {
-    ble_nus_c_on_db_disc_evt(&m_ble_nus_c, p_evt);
+    ble_nus_c_on_db_disc_evt(&m_ble_nus_c[p_evt->conn_handle], p_evt);
 }
 
 
@@ -240,16 +241,19 @@ static void ble_nus_chars_received_uart_print(uint8_t * p_data, uint16_t data_le
     }
     if (ECHOBACK_BLE_UART_DATA)
     {
-        // Send data back to the peripheral.
-        do
+        for(int c = 0; c < NRF_SDH_BLE_CENTRAL_LINK_COUNT; c++)
         {
-            ret_val = ble_nus_c_string_send(&m_ble_nus_c, p_data, data_len);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
+            // Send data back to the peripheral.
+            do
             {
-                NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
-                APP_ERROR_CHECK(ret_val);
-            }
-        } while (ret_val == NRF_ERROR_BUSY);
+                ret_val = ble_nus_c_string_send(&m_ble_nus_c[c], p_data, data_len);
+                if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY) && (ret_val != NRF_ERROR_INVALID_STATE))
+                {
+                    NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
+                    APP_ERROR_CHECK(ret_val);
+                }
+            } while (ret_val == NRF_ERROR_BUSY);
+        }
     }
 }
 
@@ -280,15 +284,17 @@ void uart_event_handle(app_uart_evt_t * p_event)
                 NRF_LOG_DEBUG("Ready to send data over BLE NUS");
                 NRF_LOG_HEXDUMP_DEBUG(data_array, index);
 
-                do
+                for(int c = 0; c < NRF_SDH_BLE_CENTRAL_LINK_COUNT; c++)
                 {
-                    ret_val = ble_nus_c_string_send(&m_ble_nus_c, data_array, index);
-                    if ( (ret_val != NRF_ERROR_INVALID_STATE) && (ret_val != NRF_ERROR_RESOURCES) )
+                    do
                     {
-                        APP_ERROR_CHECK(ret_val);
-                    }
-                } while (ret_val == NRF_ERROR_RESOURCES);
-
+                        ret_val = ble_nus_c_string_send(&m_ble_nus_c[c], data_array, index);
+                        if ( (ret_val != NRF_ERROR_INVALID_STATE) && (ret_val != NRF_ERROR_RESOURCES) )
+                        {
+                            APP_ERROR_CHECK(ret_val);
+                        }
+                    } while (ret_val == NRF_ERROR_RESOURCES);
+                }
                 index = 0;
             }
             break;
@@ -391,7 +397,7 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
     switch (p_ble_evt->header.evt_id)
     {
         case BLE_GAP_EVT_CONNECTED:
-            err_code = ble_nus_c_handles_assign(&m_ble_nus_c, p_ble_evt->evt.gap_evt.conn_handle, NULL);
+            err_code = ble_nus_c_handles_assign(&m_ble_nus_c[p_ble_evt->evt.gap_evt.conn_handle], p_ble_evt->evt.gap_evt.conn_handle, NULL);
             APP_ERROR_CHECK(err_code);
 
             err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
@@ -400,6 +406,12 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             // start discovery of services. The NUS Client waits for a discovery result
             err_code = ble_db_discovery_start(&m_db_disc, p_ble_evt->evt.gap_evt.conn_handle);
             APP_ERROR_CHECK(err_code);
+
+            if (ble_conn_state_central_conn_count() < NRF_SDH_BLE_CENTRAL_LINK_COUNT)
+            {
+                // Resume scanning.
+                scan_start();
+            }
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
@@ -530,11 +542,14 @@ void bsp_event_handler(bsp_event_t event)
             break;
 
         case BSP_EVENT_DISCONNECT:
-            err_code = sd_ble_gap_disconnect(m_ble_nus_c.conn_handle,
-                                             BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-            if (err_code != NRF_ERROR_INVALID_STATE)
+            for(int c = 0; c < NRF_SDH_BLE_CENTRAL_LINK_COUNT; c++)
             {
-                APP_ERROR_CHECK(err_code);
+                err_code = sd_ble_gap_disconnect(m_ble_nus_c[c].conn_handle,
+                                                 BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+                if (err_code != NRF_ERROR_INVALID_STATE)
+                {
+                    APP_ERROR_CHECK(err_code);
+                }
             }
             break;
 
@@ -578,9 +593,11 @@ static void nus_c_init(void)
     init.evt_handler   = ble_nus_c_evt_handler;
     init.error_handler = nus_error_handler;
     init.p_gatt_queue  = &m_ble_gatt_queue;
-
-    err_code = ble_nus_c_init(&m_ble_nus_c, &init);
-    APP_ERROR_CHECK(err_code);
+    for(int c = 0; c < NRF_SDH_BLE_CENTRAL_LINK_COUNT; c++)
+    {
+        err_code = ble_nus_c_init(&m_ble_nus_c[c], &init);
+        APP_ERROR_CHECK(err_code);
+    }
 }
 
 
@@ -666,6 +683,7 @@ int main(void)
     ble_stack_init();
     gatt_init();
     nus_c_init();
+    ble_conn_state_init();
     scan_init();
 
     // Start execution.
