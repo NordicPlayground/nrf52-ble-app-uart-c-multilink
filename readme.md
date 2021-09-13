@@ -4,15 +4,15 @@ A multilink version of the ble_app_uart_c example in the nRF5 SDK.
 
 Requirements
 ------------
-- nRF5 SDK version 16.0.0
+- nRF5 SDK version 17.0.2
 - nRF52 DK (PCA10040) or nRF52840 DK (PCA10056)
 
 SoftDevice version
 ------------------
 
-For the nRF52840 use the S140 v7.0.1, provided with SDK v16.0.0. 
+For the nRF52840 use the S140 v7.2.0, provided with SDK 17.0.2. 
 
-For the nRF52832 use the S132 v7.0.1, provided with SDK v16.0.0.
+For the nRF52832 use the S132 v7.2.0, provided with SDK 17.0.2.
 
 Note
 ----
